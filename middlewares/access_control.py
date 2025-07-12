@@ -1,68 +1,18 @@
-# --- Стандартные библиотеки ---
-import logging
-
-# --- Сторонние библиотеки ---
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message, TelegramObject, InlineKeyboardMarkup, InlineKeyboardButton
-
-logger = logging.getLogger(__name__)
+from aiogram.types import TelegramObject
+from database import get_allowed_users
 
 class AccessControlMiddleware(BaseMiddleware):
-    """
-    Мидлварь доступа: разрешает работу только определённым user_id.
-    Отклоняет все остальные запросы.
-    """
-    FREE_CALLBACKS = {"guest_deposit_menu", "guest_refund_menu"}
-    FREE_STATES = {"ConfigWizard:guest_deposit_amount", "ConfigWizard:guest_refund_id"}
-
-    def __init__(self, allowed_user_ids: list[int]):
-        """
-        :param allowed_user_ids: Список разрешённых user_id.
-        :param bot: Экземпляр бота.
-        """
-        self.allowed_user_ids = allowed_user_ids
+    def __init__(self):
         super().__init__()
 
     async def __call__(self, handler, event: TelegramObject, data: dict):
-        """
-        Проверяет наличие пользователя в списке разрешённых.
-        При отказе отправляет уведомление и блокирует обработку.
-        """
         user = data.get("event_from_user")
-        if user and user.id not in self.allowed_user_ids:
-            # Разрешить нажатие кнопки пополнения
-            if isinstance(event, CallbackQuery) and getattr(event, "data", None) in self.FREE_CALLBACKS:
-                return await handler(event, data)
-            # Разрешить оплату (состояние FSM)
-            fsm_state = data.get("state")
-            if fsm_state:
-                state_name = await fsm_state.get_state()
-                if state_name in self.FREE_STATES:
-                    return await handler(event, data)
-            # Разрешить сообщения-инвойсы (invoice)
-            if isinstance(event, Message):
-                if getattr(event, "invoice", None):
-                    return await handler(event, data)
-            # Всё остальное запрещаем
-            try:
-                if isinstance(event, Message):
-                    kb = InlineKeyboardMarkup(
-                        inline_keyboard=[
-                            [
-                                InlineKeyboardButton(text="💰 Пополнить", callback_data="guest_deposit_menu"),
-                                InlineKeyboardButton(text="↩️ Вывести", callback_data="guest_refund_menu")
-                            ]
-                        ]
-                    )
-                    await event.answer( "✅ Вы можете <b>получать подарки</b> от этого бота.\n"
-                                        "💰 Вы можете <b>пополнить и вернуть</b> звёзды из бота.\n"
-                                        "⛔️ У вас <b>нет доступа</b> к панели управления.\n\n"
-                                        "<b>🤖 Исходный код: <a href=\"https://github.com/leozizu/TelegramGiftsBot\">GitHub</a></b>\n"
-                                        "<b>🐸 Автор: @leozizu</b>\n<b>📢 Канал: @pepeksey</b>",
-                                        reply_markup=kb)
-                elif isinstance(event, CallbackQuery):
-                    await event.answer("⛔️ Нет доступа", show_alert=True)
-            except Exception as e:
-                logger.error(f"Не удалось отправить отказ пользователю {user.id}: {e}")
-            return
-        return await handler(event, data)
+        allowed_user_ids = await get_allowed_users()  # Динамически получаем список из базы
+        if user and user.id in allowed_user_ids:
+            return await handler(event, data)
+        # Разрешаем гостевые операции (пополнение/вывод) для всех
+        if hasattr(event, "message") and event.message.text in ["/deposit", "/withdraw"]:
+            return await handler(event, data)
+        await event.answer("⚠️ Доступ запрещён. Обратитесь к администратору.")
+        return
